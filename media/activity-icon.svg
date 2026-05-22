@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- main branch vertical line -->
+  <rect x="7" y="4" width="2" height="16" fill="currentColor"/>
+  <!-- feature branch line -->
+  <rect x="9" y="9.5" width="7.2" height="2" transform="rotate(35 9 10.5)" fill="currentColor"/>
+  <!-- nodes -->
+  <circle cx="8" cy="5"  r="2.5" fill="currentColor"/>
+  <circle cx="8" cy="14" r="2.5" fill="currentColor"/>
+  <circle cx="8" cy="20" r="2.5" fill="currentColor"/>
+  <circle cx="16" cy="11" r="2.5" fill="currentColor"/>
+</svg>

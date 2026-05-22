@@ -1,0 +1,70 @@
+{
+  "name": "open-git",
+  "displayName": "Open Git",
+  "description": "View a Git Graph of your repository, and perform Git actions from the graph.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["SCM Providers"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "git-graph-panel",
+          "title": "Open Git",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "git-graph-panel": [
+        {
+          "id": "git-graph.panelView",
+          "name": "Open Git",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "git-graph.showGraph",
+        "title": "Open Git: Show Graph",
+        "icon": "$(git-branch)"
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "git-graph.showGraph",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "git-graph.showGraph",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "git-graph.showGraph",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
