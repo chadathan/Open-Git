@@ -9,7 +9,7 @@ const util_1 = require("util");
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 const SEP = '\x1f';
 const REC = '\x1e';
-async function getGitLog(repoPath, limit = 300) {
+async function getGitLog(repoPath, limit = 1500) {
     const format = [
         '%H', // hash
         '%P', // parents (space separated)

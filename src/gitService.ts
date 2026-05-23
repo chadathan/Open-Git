@@ -36,7 +36,7 @@ export interface GitGraphData {
 const SEP = '\x1f';
 const REC = '\x1e';
 
-export async function getGitLog(repoPath: string, limit = 300): Promise<GitGraphData> {
+export async function getGitLog(repoPath: string, limit = 1500): Promise<GitGraphData> {
   const format = [
     '%H',   // hash
     '%P',   // parents (space separated)
