@@ -6,7 +6,7 @@
   "publisher": "local",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["SCM Providers"],
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {

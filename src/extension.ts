@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as nodePath from 'path';
 import * as fs from 'fs';
 import { GraphViewProvider, GitGraphContentProvider } from './graphPanel';
+import { getLineBlame } from './gitService';
 
 export function activate(context: vscode.ExtensionContext) {
   const allPaths = getAllRepoPaths();
@@ -69,6 +70,9 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider('git-graph', new GitGraphContentProvider())
   );
+
+  const blame = new BlameController(getAllRepoPaths);
+  context.subscriptions.push({ dispose: () => blame.dispose() });
 }
 
 function getAllRepoPaths(): string[] {
@@ -115,3 +119,111 @@ function getActiveRepoPath(allPaths: string[]): string {
 }
 
 export function deactivate() {}
+
+
+class BlameController {
+  private readonly decorationType: vscode.TextEditorDecorationType;
+  private readonly statusBar: vscode.StatusBarItem;
+  private readonly disposables: vscode.Disposable[] = [];
+  private timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(private readonly getRepoPaths: () => string[]) {
+    this.decorationType = vscode.window.createTextEditorDecorationType({
+      isWholeLine: false,
+      after: {
+        contentText: '',
+        color: new vscode.ThemeColor('editorGhostText.foreground'),
+        fontStyle: 'italic',
+        margin: '0 0 0 3em',
+      },
+    });
+    this.disposables.push(this.decorationType);
+
+    this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1);
+    this.statusBar.show();
+    this.disposables.push(
+      vscode.window.onDidChangeTextEditorSelection(e => this.schedule(e.textEditor)),
+      vscode.window.onDidChangeActiveTextEditor(e => { if (e) { this.schedule(e); } }),
+      vscode.workspace.onDidChangeTextDocument(e => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && e.document === editor.document) { this.clearDec(); }
+      }),
+    );
+    if (vscode.window.activeTextEditor) { this.schedule(vscode.window.activeTextEditor); }
+  }
+
+  private clearDec() {
+    for (const editor of vscode.window.visibleTextEditors) {
+      editor.setDecorations(this.decorationType, []);
+    }
+  }
+
+  private schedule(editor: vscode.TextEditor) {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.update(editor), 150);
+  }
+
+  private updateSeq = 0;
+
+  private async update(editor: vscode.TextEditor) {
+    const seq = ++this.updateSeq;
+    const doc = editor.document;
+    this.statusBar.text = '';
+
+    if (doc.isUntitled || doc.uri.scheme !== 'file') { this.clearDec(); return; }
+
+    const filePath = doc.uri.fsPath;
+    const repoPath = this.getRepoPaths()
+      .filter(p => filePath.startsWith(p + '/') || filePath.startsWith(p + nodePath.sep))
+      .sort((a, b) => b.length - a.length)[0];
+    if (!repoPath) { this.clearDec(); return; }
+
+    const line = editor.selection.active.line;
+    const blame = await getLineBlame(repoPath, filePath, line + 1);
+
+    // discard if a newer update started while we were awaiting
+    if (seq !== this.updateSeq) { return; }
+    if (editor !== vscode.window.activeTextEditor) { return; }
+    if (!blame) { this.clearDec(); return; }
+
+    const text = blame.isUncommitted
+      ? 'Uncommitted changes'
+      : `${blame.author}, ${timeAgo(blame.date)} · ${blame.summary}`;
+
+    this.statusBar.text = `$(git-commit) ${text}`;
+
+    this.clearDec();
+
+    console.log('[OpenGit] target editor:', editor.document.uri.fsPath, 'viewColumn:', editor.viewColumn);
+    const targetLine = editor.selection.active.line;
+    const lineText = editor.document.lineAt(targetLine);
+    const range = new vscode.Range(targetLine, lineText.text.length, targetLine, lineText.text.length);
+    console.log('[OpenGit] setDecorations line:', targetLine, 'range:', range.start.character, '-', range.end.character);
+    editor.setDecorations(this.decorationType, [{
+      range: range,
+      renderOptions: {
+        after: {
+          contentText: ` • ${text}`,
+        },
+      },
+    }]);
+    this.statusBar.text += ` [L${targetLine + 1}]`;
+  }
+
+  dispose() {
+    clearTimeout(this.timer);
+    this.clearDec();
+    this.statusBar.dispose();
+    this.disposables.forEach(d => d.dispose());
+  }
+}
+
+function timeAgo(date: Date): string {
+  const s = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (s < 60)               { return 'just now'; }
+  if (s < 3600)             { return `${Math.floor(s / 60)}m ago`; }
+  if (s < 86400)            { return `${Math.floor(s / 3600)}h ago`; }
+  if (s < 86400 * 30)       { return `${Math.floor(s / 86400)}d ago`; }
+  if (s < 86400 * 365)      { return `${Math.floor(s / (86400 * 30))}mo ago`; }
+  return `${Math.floor(s / (86400 * 365))}y ago`;
+}

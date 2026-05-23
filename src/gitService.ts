@@ -208,6 +208,43 @@ export async function getCommitFiles(repoPath: string, hash: string): Promise<Co
   });
 }
 
+export interface LineBlame {
+  hash: string;
+  author: string;
+  date: Date;
+  summary: string;
+  isUncommitted: boolean;
+}
+
+export async function getLineBlame(repoPath: string, filePath: string, line: number): Promise<LineBlame | null> {
+  try {
+    const { stdout } = await execFileAsync('git', [
+      '-C', repoPath, 'blame',
+      '-L', `${line},${line}`,
+      '--porcelain', '--',
+      filePath,
+    ]);
+    if (!stdout.trim()) { return null; }
+
+    const lines = stdout.split('\n');
+    const hash = lines[0].split(' ')[0];
+
+    if (/^0+$/.test(hash)) {
+      return { hash, author: 'You', date: new Date(), summary: 'Uncommitted changes', isUncommitted: true };
+    }
+
+    let author = '', timestamp = 0, summary = '';
+    for (const l of lines) {
+      if (l.startsWith('author '))      { author    = l.slice(7); }
+      else if (l.startsWith('author-time ')) { timestamp = parseInt(l.slice(12)); }
+      else if (l.startsWith('summary ')) { summary   = l.slice(8); }
+    }
+    return { hash, author, date: new Date(timestamp * 1000), summary, isUncommitted: false };
+  } catch {
+    return null;
+  }
+}
+
 export const BRANCH_COLORS = [
   '#4CAF50', '#2196F3', '#FF9800', '#E91E63',
   '#9C27B0', '#00BCD4', '#FF5722', '#8BC34A',

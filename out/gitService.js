@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BRANCH_COLORS = void 0;
 exports.getGitLog = getGitLog;
 exports.getCommitFiles = getCommitFiles;
+exports.getLineBlame = getLineBlame;
 const child_process_1 = require("child_process");
 const util_1 = require("util");
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
@@ -165,6 +166,40 @@ async function getCommitFiles(repoPath, hash) {
         }
         return { status, path: parts[1] };
     });
+}
+async function getLineBlame(repoPath, filePath, line) {
+    try {
+        const { stdout } = await execFileAsync('git', [
+            '-C', repoPath, 'blame',
+            '-L', `${line},${line}`,
+            '--porcelain', '--',
+            filePath,
+        ]);
+        if (!stdout.trim()) {
+            return null;
+        }
+        const lines = stdout.split('\n');
+        const hash = lines[0].split(' ')[0];
+        if (/^0+$/.test(hash)) {
+            return { hash, author: 'You', date: new Date(), summary: 'Uncommitted changes', isUncommitted: true };
+        }
+        let author = '', timestamp = 0, summary = '';
+        for (const l of lines) {
+            if (l.startsWith('author ')) {
+                author = l.slice(7);
+            }
+            else if (l.startsWith('author-time ')) {
+                timestamp = parseInt(l.slice(12));
+            }
+            else if (l.startsWith('summary ')) {
+                summary = l.slice(8);
+            }
+        }
+        return { hash, author, date: new Date(timestamp * 1000), summary, isUncommitted: false };
+    }
+    catch {
+        return null;
+    }
 }
 exports.BRANCH_COLORS = [
     '#4CAF50', '#2196F3', '#FF9800', '#E91E63',
