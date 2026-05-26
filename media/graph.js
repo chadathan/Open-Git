@@ -53,6 +53,8 @@
   const btnRefresh      = document.getElementById('btn-refresh');
   const btnClose        = document.getElementById('detail-close');
   const toolbarWipActions = document.getElementById('toolbar-wip-actions');
+  const btnUndo         = document.getElementById('btn-undo');
+  const btnRedo         = document.getElementById('btn-redo');
   const btnTbStash      = document.getElementById('btn-tb-stash');
   const searchInput     = document.getElementById('search-input');
   const scrollWrap      = document.getElementById('scroll-wrap');
@@ -73,6 +75,7 @@
   initScrollSync();
   initDetailResize();
   initSidebarResize();
+  initGraphDragScroll();
 
   document.getElementById('diff-back').addEventListener('click', () => {
     diffOverlay.classList.add('hidden');
@@ -113,6 +116,8 @@
     detailPanel.classList.add('hidden');
     render();
   });
+  btnUndo.addEventListener('click', () => vscode.postMessage({ command: 'undo' }));
+  btnRedo.addEventListener('click', () => vscode.postMessage({ command: 'redo' }));
   btnTbStash.addEventListener('click', () => vscode.postMessage({ command: 'stash' }));
   btnClose.addEventListener('click', () => {
     detailPanel.classList.add('hidden');
@@ -510,7 +515,7 @@
     // Only reset --col-graph when branch layout actually changes width
     if (graphW !== lastGraphW) {
       lastGraphW = graphW;
-      document.documentElement.style.setProperty('--col-graph', graphW + 'px');
+      document.documentElement.style.setProperty('--col-graph', Math.min(220, graphW) + 'px');
     }
 
     const hasUnstaged = data.unstaged && data.unstaged.length > 0;
@@ -552,53 +557,78 @@
 
     // edges
     for (let i = 0; i < commits.length; i++) {
-      const c = commits[i];
-      const x1 = nx(c.column), y1 = ny(i);
+      try {
+        const c = commits[i];
+        if (!c) { continue; }
+        const parents = Array.isArray(c.parents) ? c.parents : [];
+        const col = Number.isFinite(c.column) ? c.column : 0;
+        const colorIdx = Number.isFinite(c.color) ? c.color : 0;
+        const x1 = nx(col), y1 = ny(i);
 
-      for (const ph of c.parents) {
-        const pi = idxMap.get(ph);
-        if (pi === undefined) { continue; }
-        const pc = commits[pi];
-        const x2 = nx(pc.column), y2 = ny(pi);
-        const color = COLORS[c.color % COLORS.length];
+        for (let idx = 0; idx < parents.length; idx++) {
+          const ph = parents[idx];
+          const pi = idxMap.get(ph);
+          if (pi === undefined) { continue; }
+          const pc = commits[pi];
+          if (!pc) { continue; }
+          const pcCol = Number.isFinite(pc.column) ? pc.column : 0;
+          const x2 = nx(pcCol), y2 = ny(pi);
+          const color = COLORS[colorIdx % COLORS.length] || COLORS[0];
 
-        ctx.beginPath();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
 
-        if (c.column === pc.column) {
-          ctx.moveTo(x1, y1 + NODE_R);
-          ctx.lineTo(x2, y2 - NODE_R);
-        } else {
-          const dy = y2 - y1;
-          const startX = x1;
-          const startY = y1 + NODE_R;
-          const endX = x2;
-          const endY = y2 - NODE_R;
-          ctx.moveTo(startX, startY);
-          ctx.bezierCurveTo(startX, startY + dy * 0.4, endX, endY - dy * 0.4, endX, endY);
+          if (col === pcCol) {
+            ctx.moveTo(x1, y1 + NODE_R);
+            ctx.lineTo(x2, y2 - NODE_R);
+          } else if (idx === 0) {
+            // Branching (ขึ้นตรงๆ และเข้าด้านข้าง)
+            const dx = Math.abs(x2 - x1);
+            const dy = y2 - y1;
+            const cr = Math.min(8, dx, dy * 0.5);
+            
+            ctx.moveTo(x1, y1 + NODE_R);
+            ctx.arcTo(x1, y2, x2, y2, cr);
+            ctx.lineTo(x2, y2);
+          } else {
+            // Merging (ออกข้างขึ้นตรงๆ)
+            const dx = Math.abs(x2 - x1);
+            const dy = y2 - y1;
+            const cr = Math.min(8, dx, dy * 0.5);
+            
+            ctx.moveTo(x1, y1);
+            ctx.arcTo(x2, y1, x2, y2 - NODE_R, cr);
+            ctx.lineTo(x2, y2 - NODE_R);
+          }
+          ctx.stroke();
         }
-        ctx.stroke();
-      }
+      } catch (e) { console.error('Edge draw error at', i, e); }
     }
 
     // horizontal connection lines from label column (x=0) to node
     for (let i = 0; i < commits.length; i++) {
-      const c = commits[i];
-      const grouped = groupRefs(c.refs);
-      if (grouped.length) {
-        const x = nx(c.column);
-        const y = ny(i);
-        const color = COLORS[c.color % COLORS.length];
-        const isCurrent = grouped.some(g => g.current);
+      try {
+        const c = commits[i];
+        if (!c) { continue; }
+        const refs = Array.isArray(c.refs) ? c.refs : [];
+        const grouped = groupRefs(refs);
+        if (grouped.length) {
+          const col = Number.isFinite(c.column) ? c.column : 0;
+          const colorIdx = Number.isFinite(c.color) ? c.color : 0;
+          const x = nx(col);
+          const y = ny(i);
+          const color = COLORS[colorIdx % COLORS.length] || COLORS[0];
+          const isCurrent = grouped.some(g => g.current);
 
-        ctx.beginPath();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = isCurrent ? 1.8 : 1.0;
-        ctx.moveTo(0, y);
-        ctx.lineTo(x, y);
-        ctx.stroke();
-      }
+          ctx.beginPath();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = isCurrent ? 1.8 : 1.0;
+          ctx.moveTo(0, y);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+        }
+      } catch (e) { console.error('Ref line error at', i, e); }
     }
 
     // nodes
@@ -685,11 +715,13 @@
             ctx.moveTo(wx, wy + NODE_R);
             ctx.lineTo(mx, ny(mIdx) - NODE_R);
           } else {
+            const dx = Math.abs(mx - wx);
             const dy = ny(mIdx) - wy;
-            const startY = wy + NODE_R;
-            const endY = ny(mIdx) - NODE_R;
-            ctx.moveTo(wx, startY);
-            ctx.bezierCurveTo(wx, startY + dy * 0.4, mx, endY - dy * 0.4, mx, endY);
+            const cr = Math.min(8, dx, dy * 0.5);
+            
+            ctx.moveTo(wx, wy + NODE_R);
+            ctx.arcTo(wx, ny(mIdx), mx, ny(mIdx), cr);
+            ctx.lineTo(mx, ny(mIdx));
           }
           ctx.stroke();
           ctx.setLineDash([]);
@@ -705,36 +737,52 @@
   }
 
   function drawNode(commit, idx, selected) {
-    const x = nx(commit.column), y = ny(idx);
-    const color = COLORS[commit.color % COLORS.length];
-    const initials = toInitials(commit.author);
-    const isHead = commit.refs.some(r => r === 'HEAD' || r.startsWith('HEAD ->'));
+    try {
+      if (!commit) { return; }
+      const col = Number.isFinite(commit.column) ? commit.column : 0;
+      const colorIdx = Number.isFinite(commit.color) ? commit.color : 0;
+      const x = nx(col), y = ny(idx);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) { return; }
+      const color = COLORS[colorIdx % COLORS.length] || COLORS[0];
+      const initials = toInitials(commit.author);
+      const refs = Array.isArray(commit.refs) ? commit.refs : [];
+      const isHead = refs.some(r => r === 'HEAD' || (typeof r === 'string' && r.startsWith('HEAD ->')));
 
-    ctx.beginPath();
-    ctx.arc(x, y, NODE_R, 0, Math.PI * 2);
-    ctx.fillStyle = selected ? '#fff' : hexToRgba(color, 0.2);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.8;
+      // Solid dark background ring (always visible, regardless of theme)
+      ctx.beginPath();
+      ctx.arc(x, y, NODE_R, 0, Math.PI * 2);
+      ctx.fillStyle = selected ? '#fff' : '#1e1e1e';
+      ctx.fill();
 
-    if (isHead && !selected) {
-      ctx.setLineDash([3, 2]);
-      ctx.fill();
-      ctx.stroke();
-      ctx.setLineDash([]);
-    } else if (selected) {
-      ctx.lineWidth = 2.5;
-      ctx.fill();
-      ctx.stroke();
-    } else {
-      ctx.fill();
-      ctx.stroke();
+      // Colored overlay + stroke
+      ctx.beginPath();
+      ctx.arc(x, y, NODE_R, 0, Math.PI * 2);
+      ctx.fillStyle = selected ? '#fff' : hexToRgba(color, 0.35);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.8;
+
+      if (isHead && !selected) {
+        ctx.setLineDash([3, 2]);
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (selected) {
+        ctx.lineWidth = 2.5;
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = selected ? color : lighten(color);
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(initials, x, y);
+    } catch (e) {
+      console.error('Error drawing node at index', idx, commit, e);
     }
-
-    ctx.fillStyle = selected ? color : lighten(color);
-    ctx.font = 'bold 8.5px var(--vscode-editor-font-family, monospace)';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(initials, x, y + 0.5);
   }
 
   // ── Rows ──────────────────────────────────────────────────────────────────────
@@ -840,22 +888,23 @@
 
       const i = item.idx;
       const c = commits[i];
+      if (!c) { continue; }
       const row = document.createElement('div');
       row.className = 'row';
       row.dataset.idx     = String(i);
-      row.dataset.subject = c.subject.toLowerCase();
-      row.dataset.author  = c.author.toLowerCase();
-      row.dataset.hash    = c.hash;
+      row.dataset.subject = (c.subject || '').toLowerCase();
+      row.dataset.author  = (c.author || '').toLowerCase();
+      row.dataset.hash    = c.hash || '';
 
       // branch cell
       const branchCell = document.createElement('div');
       branchCell.className = 'cell cell-branch';
-      const grouped = groupRefs(c.refs);
+      const grouped = groupRefs(Array.isArray(c.refs) ? c.refs : []);
       if (grouped.length) {
         const isCurrent = grouped.some(g => g.current);
         if (isCurrent) {
           row.classList.add('row-current');
-          const color = COLORS[c.color % COLORS.length];
+          const color = COLORS[(c.color || 0) % COLORS.length] || COLORS[0];
           row.style.setProperty('--branch-color', color);
           row.style.setProperty('--branch-color-bg', hexToRgba(color, 0.05));
         }
@@ -889,7 +938,7 @@
         if (grouped.some(g => g.current)) {
           line.classList.add('current-branch-line');
         }
-        line.style.backgroundColor = COLORS[c.color % COLORS.length];
+        line.style.backgroundColor = COLORS[(c.color || 0) % COLORS.length] || COLORS[0];
         wrap.appendChild(line);
         
         branchCell.appendChild(wrap);
@@ -902,26 +951,26 @@
       // message cell
       const msgCell = document.createElement('div');
       msgCell.className = 'cell cell-msg';
-      msgCell.title = c.subject;
+      msgCell.title = c.subject || '';
       const msgSpan = document.createElement('span');
       msgSpan.className = 'msg-text';
-      msgSpan.textContent = c.subject;
+      msgSpan.textContent = c.subject || '';
       msgCell.appendChild(msgSpan);
 
       // author cell
       const authorCell = document.createElement('div');
       authorCell.className = 'cell cell-author';
-      authorCell.textContent = c.author;
+      authorCell.textContent = c.author || '';
 
       // date cell
       const dateCell = document.createElement('div');
       dateCell.className = 'cell cell-date';
-      dateCell.textContent = fmtDate(c.date);
+      dateCell.textContent = fmtDate(c.date || '');
 
       // hash cell
       const hashCell = document.createElement('div');
       hashCell.className = 'cell cell-hash';
-      hashCell.textContent = c.hash.slice(0, 8);
+      hashCell.textContent = (c.hash || '').slice(0, 8);
 
       row.append(branchCell, graphCell, msgCell, authorCell, dateCell, hashCell);
       row.addEventListener('click', () => selectCommit(i));
@@ -1228,6 +1277,12 @@
           <span class="wip-expand-all" data-type="staged">Expand All</span>
           <div id="d-staged-files">${renderWipFiles(staged, expandedStagedDirs, 'staged')}</div>
         </div>
+      </div>
+
+      <div class="wip-commit-section">
+        <div class="wip-commit-label">Commit</div>
+        <input type="text" id="wip-commit-message" class="wip-commit-input" placeholder="Commit message" />
+        <button id="wip-commit-btn" class="wip-commit-btn">Commit</button>
       </div>`;
 
     detailPanel.classList.remove('hidden');
@@ -1252,6 +1307,21 @@
     if (stageAllBtn) { stageAllBtn.onclick = () => vscode.postMessage({ command: 'stageAll' }); }
     const unstageAllBtn = detailContent.querySelector('.wip-unstage-all-btn');
     if (unstageAllBtn) { unstageAllBtn.onclick = () => vscode.postMessage({ command: 'unstageAll' }); }
+
+    // Commit button handler
+    const commitBtn = detailContent.querySelector('#wip-commit-btn');
+    const commitMsg = detailContent.querySelector('#wip-commit-message');
+    if (commitBtn && commitMsg) {
+      commitBtn.onclick = () => {
+        const msg = commitMsg.value.trim();
+        if (!msg) {
+          alert('Please enter a commit message');
+          return;
+        }
+        vscode.postMessage({ command: 'commit', message: msg });
+        commitMsg.value = '';
+      };
+    }
 
     // Collapse sections
     detailContent.querySelectorAll('.wip-sec-header').forEach(hdr => {
@@ -1750,6 +1820,7 @@
       <div class="ctx-item" data-a="create-tag">Create tag here…</div>
       ${mergeItem}`;
     ctxEl.addEventListener('click', ev => {
+      ev.stopPropagation();
       const el = /** @type {HTMLElement} */(ev.target);
       const a = el.dataset.a;
       if (a === 'co-branch')        { vscode.postMessage({ command: 'checkoutBranch', branch: el.dataset.branch }); }
@@ -1769,7 +1840,7 @@
       removeCtxMenu();
     });
     document.body.appendChild(ctxEl);
-    setTimeout(() => document.addEventListener('click', removeCtxMenu, { once: true }), 0);
+    document.addEventListener('click', removeCtxMenu, { once: true });
   }
   function removeCtxMenu() { ctxEl?.remove(); ctxEl = null; }
 
@@ -1793,6 +1864,7 @@
       ${g.local  ? `<div class="ctx-item ctx-item-danger" data-a="del-local">Delete local branch</div>` : ''}
       ${g.remote ? `<div class="ctx-item ctx-item-danger" data-a="del-remote">Delete remote branch</div>` : ''}`;
     ctxEl.addEventListener('click', ev => {
+      ev.stopPropagation();
       const el = /** @type {HTMLElement} */(ev.target);
       const a = el.dataset.a;
       if (a === 'push')        { vscode.postMessage({ command: 'pushBranch', branch: localName }); }
@@ -1806,7 +1878,7 @@
       removeCtxMenu();
     });
     document.body.appendChild(ctxEl);
-    setTimeout(() => document.addEventListener('click', removeCtxMenu, { once: true }), 0);
+    document.addEventListener('click', removeCtxMenu, { once: true });
   }
 
   function showSidebarBranchCtxMenu(e, fullBranch) {
@@ -1841,6 +1913,7 @@
         <div class="ctx-item ctx-item-danger" data-a="del-remote">Delete remote branch</div>`;
     }
     ctxEl.addEventListener('click', ev => {
+      ev.stopPropagation();
       const el = /** @type {HTMLElement} */(ev.target);
       const a = el.dataset.a;
       if (a === 'push')       { vscode.postMessage({ command: 'pushBranch', branch: localName }); }
@@ -1853,7 +1926,7 @@
       removeCtxMenu();
     });
     document.body.appendChild(ctxEl);
-    setTimeout(() => document.addEventListener('click', removeCtxMenu, { once: true }), 0);
+    document.addEventListener('click', removeCtxMenu, { once: true });
   }
 
   function showStashCtxMenu(e, stash) {
@@ -1865,13 +1938,14 @@
       <div class="ctx-item" data-a="pop">Pop stash</div>
       <div class="ctx-item ctx-item-danger" data-a="drop">Delete stash</div>`;
     ctxEl.addEventListener('click', ev => {
+      ev.stopPropagation();
       const a = /** @type {HTMLElement} */(ev.target).dataset.a;
       if (a === 'pop')  { vscode.postMessage({ command: 'popStash',  name: stash.name }); }
       if (a === 'drop') { vscode.postMessage({ command: 'dropStash', name: stash.name }); }
       removeCtxMenu();
     });
     document.body.appendChild(ctxEl);
-    setTimeout(() => document.addEventListener('click', removeCtxMenu, { once: true }), 0);
+    document.addEventListener('click', removeCtxMenu, { once: true });
   }
 
   function showTagCtxMenu(e, tagName) {
@@ -1881,13 +1955,14 @@
     ctxEl.style.cssText = `left:${e.pageX}px;top:${e.pageY}px`;
     ctxEl.innerHTML = `<div class="ctx-item ctx-item-danger" data-a="delete-tag">Delete tag ${esc(tagName)}</div>`;
     ctxEl.addEventListener('click', ev => {
+      ev.stopPropagation();
       if (/** @type {HTMLElement} */(ev.target).dataset.a === 'delete-tag') {
         vscode.postMessage({ command: 'deleteTag', name: tagName });
       }
       removeCtxMenu();
     });
     document.body.appendChild(ctxEl);
-    setTimeout(() => document.addEventListener('click', removeCtxMenu, { once: true }), 0);
+    document.addEventListener('click', removeCtxMenu, { once: true });
   }
 
   // ── Column resize ─────────────────────────────────────────────────────────────
@@ -1972,6 +2047,69 @@
         redrawCanvas();
       });
     });
+
+    // Sync horizontal trackpad/wheel scrolling on the graph column
+    scrollWrap.addEventListener('wheel', (e) => {
+      if (Math.abs(e.deltaX) > 0) {
+        const rect = scrollWrap.getBoundingClientRect();
+        const colBranch = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-branch')) || 100;
+        const colGraph = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-graph')) || 100;
+        
+        const relativeX = e.clientX - rect.left + scrollWrap.scrollLeft;
+        if (relativeX >= colBranch && relativeX <= colBranch + colGraph) {
+          graphClipWrap.scrollLeft += e.deltaX;
+          e.preventDefault();
+        }
+      }
+    }, { passive: false });
+  }
+
+  // ── Graph drag scroll ─────────────────────────────────────────────────────────
+  function initGraphDragScroll() {
+    let isDragging = false;
+    let hasMoved = false;
+    let startX = 0;
+    let startScrollLeft = 0;
+    let clickedRow = null;
+
+    scrollWrap.addEventListener('mousedown', e => {
+      const rect = scrollWrap.getBoundingClientRect();
+      const colBranch = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-branch')) || 100;
+      const colGraph = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-graph')) || 100;
+      
+      const relativeX = e.clientX - rect.left + scrollWrap.scrollLeft;
+      if (relativeX >= colBranch && relativeX <= colBranch + colGraph) {
+        const row = e.target.closest('.row');
+        if (row) {
+          isDragging = true;
+          hasMoved = false;
+          startX = e.clientX;
+          startScrollLeft = graphClipWrap.scrollLeft;
+          clickedRow = row;
+          scrollWrap.style.cursor = 'grabbing';
+          e.preventDefault();
+        }
+      }
+    });
+
+    document.addEventListener('mousemove', e => {
+      if (!isDragging) { return; }
+      const deltaX = e.clientX - startX;
+      if (Math.abs(deltaX) > 3) {
+        hasMoved = true;
+      }
+      graphClipWrap.scrollLeft = startScrollLeft - deltaX;
+    });
+
+    document.addEventListener('mouseup', e => {
+      if (isDragging) {
+        isDragging = false;
+        scrollWrap.style.cursor = '';
+        if (!hasMoved && clickedRow) {
+          clickedRow.click();
+        }
+      }
+    });
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1982,9 +2120,17 @@
   }
 
   function toInitials(name) {
-    const p = (name || '?').trim().split(/\s+/);
-    return p.length === 1 ? p[0].slice(0, 2).toUpperCase()
-                          : (p[0][0] + p[p.length - 1][0]).toUpperCase();
+    try {
+      const p = (name || '?').trim().split(/\s+/);
+      if (p.length === 1) {
+        return (p[0] || '?').slice(0, 2).toUpperCase();
+      }
+      const first = p[0] || '?';
+      const last = p[p.length - 1] || '?';
+      return ((first[0] || '?') + (last[0] || '?')).toUpperCase();
+    } catch (e) {
+      return '?';
+    }
   }
 
   function hexToRgba(hex, a) {

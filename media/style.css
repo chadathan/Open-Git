@@ -449,8 +449,10 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   pointer-events: none;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
+  scrollbar-width: none;
+}
+#graph-clip-wrap::-webkit-scrollbar {
+  display: none;
 }
 
 #graph-canvas {
@@ -1074,6 +1076,49 @@ body {
 .wip-staged   { color: #4ec9b0; background: rgba(78,201,176,0.12); }
 .wip-unstaged { color: #fbbf24; background: rgba(251,191,36,0.12); }
 
+/* ── WIP Commit section ────────────────────────────────────────────────────── */
+.wip-commit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+.wip-commit-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.wip-commit-input {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border);
+  color: #fff;
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.wip-commit-input::placeholder { color: rgba(255,255,255,0.4); }
+.wip-commit-input:focus { outline: none; border-color: #3794ff; background: rgba(0,0,0,0.3); }
+
+.wip-commit-btn {
+  background: rgba(55,148,255,0.15);
+  border: 1px solid #3794ff;
+  color: #3794ff;
+  padding: 6px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.1s;
+}
+.wip-commit-btn:hover { background: rgba(55,148,255,0.25); }
+.wip-commit-btn:active { transform: scale(0.98); }
 
 /* ── Diff panel (split alongside detail panel) ─────────────────────────────── */
 #diff-overlay {

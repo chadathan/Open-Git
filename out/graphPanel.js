@@ -141,6 +141,30 @@ class GraphPanel {
                 catch { }
                 await this.refresh();
             }
+            else if (msg.command === 'commit') {
+                try {
+                    await execFileAsync('git', ['-C', this.repoPath, 'commit', '-m', msg.message]);
+                }
+                catch (e) {
+                    vscode.window.showErrorMessage(`Commit failed: ${e}`);
+                    return;
+                }
+                await this.refresh();
+            }
+            else if (msg.command === 'undo') {
+                try {
+                    await execFileAsync('git', ['-C', this.repoPath, 'reset', '--soft', 'HEAD~1']);
+                }
+                catch { }
+                await this.refresh();
+            }
+            else if (msg.command === 'redo') {
+                try {
+                    await execFileAsync('git', ['-C', this.repoPath, 'reset', '--soft', 'HEAD@{1}']);
+                }
+                catch { }
+                await this.refresh();
+            }
             else if (msg.command === 'stash') {
                 try {
                     await execFileAsync('git', ['-C', this.repoPath, 'stash']);
@@ -274,6 +298,9 @@ class GraphPanel {
       <input id="search-input" type="text" placeholder="Search commits, authors, hashes…" autocomplete="off" spellcheck="false" />
     </div>
     <div id="toolbar-wip-actions" class="hidden">
+      <button id="btn-undo" data-tip-bottom="Undo last commit">↶</button>
+      <button id="btn-redo" data-tip-bottom="Redo undo">↷</button>
+      <div class="tb-sep"></div>
       <button id="btn-tb-stash" data-tip-bottom="Stash all changes">Stash</button>
     </div>
     <button id="btn-refresh" data-tip-bottom="Refresh graph">↻</button>
@@ -741,6 +768,39 @@ class GraphViewProvider {
             catch { }
             await this.refresh();
         }
+        else if (msg.command === 'commit') {
+            this.showLoading();
+            try {
+                await execFileAsync('git', ['-C', this.repoPath, 'commit', '-m', msg.message]);
+                this.sendToast('success', 'Commit Created');
+            }
+            catch (err) {
+                this.sendToast('error', 'Commit Failed', (err.stderr || err.stdout || err.message || '').trim().split('\n')[0]);
+            }
+            await this.refresh();
+        }
+        else if (msg.command === 'undo') {
+            this.showLoading();
+            try {
+                await execFileAsync('git', ['-C', this.repoPath, 'reset', '--soft', 'HEAD~1']);
+                this.sendToast('success', 'Commit Undone');
+            }
+            catch (err) {
+                this.sendToast('error', 'Undo Failed', (err.stderr || err.stdout || err.message || '').trim().split('\n')[0]);
+            }
+            await this.refresh();
+        }
+        else if (msg.command === 'redo') {
+            this.showLoading();
+            try {
+                await execFileAsync('git', ['-C', this.repoPath, 'reset', '--soft', 'HEAD@{1}']);
+                this.sendToast('success', 'Redo Complete');
+            }
+            catch (err) {
+                this.sendToast('error', 'Redo Failed', (err.stderr || err.stdout || err.message || '').trim().split('\n')[0]);
+            }
+            await this.refresh();
+        }
         else if (msg.command === 'stash') {
             this.showLoading();
             try {
@@ -979,6 +1039,9 @@ class GraphViewProvider {
       <input id="search-input" type="text" placeholder="Search commits, authors, hashes…" autocomplete="off" spellcheck="false" />
     </div>
     <div id="toolbar-wip-actions" class="hidden">
+      <button id="btn-undo" data-tip-bottom="Undo last commit">↶</button>
+      <button id="btn-redo" data-tip-bottom="Redo undo">↷</button>
+      <div class="tb-sep"></div>
       <button id="btn-tb-stash" data-tip-bottom="Stash all changes">Stash</button>
     </div>
     <button id="btn-refresh" data-tip-bottom="Refresh graph">↻</button>
