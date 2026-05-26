@@ -37,20 +37,27 @@ async function getGitLog(repoPath, limit = 1500) {
         const refs = refsRaw ? refsRaw.split(', ').filter(Boolean) : [];
         return { hash, parents, subject, author, email, date, refs, column: 0, color: 0 };
     });
-    const { stdout: headOut } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', 'HEAD']);
-    const head = headOut.trim();
-    // Fetch stashes before filtering so we can exclude stash-related commits from main log
+    // Run independent commands in parallel
+    const [headRes, stashRes, branchRes, stagedRes, unstagedRes, untrackedRes, mergeHeadRes] = await Promise.allSettled([
+        execFileAsync('git', ['-C', repoPath, 'rev-parse', 'HEAD']),
+        execFileAsync('git', ['-C', repoPath, 'stash', 'list', `--pretty=format:%H${SEP}%gd${SEP}%s${SEP}%P${SEP}%ci${REC}`]),
+        execFileAsync('git', ['-C', repoPath, 'branch', '-a']),
+        execFileAsync('git', ['-C', repoPath, 'diff', '--cached', '--name-status']),
+        execFileAsync('git', ['-C', repoPath, 'diff', '--name-status']),
+        execFileAsync('git', ['-C', repoPath, 'ls-files', '--others', '--exclude-standard']),
+        execFileAsync('git', ['-C', repoPath, 'rev-parse', '--verify', 'MERGE_HEAD']),
+    ]);
+    const head = headRes.status === 'fulfilled' ? headRes.value.stdout.trim() : '';
+    const branches = branchRes.status === 'fulfilled'
+        ? branchRes.value.stdout.split('\n').map(b => b.replace(/^\*?\s+/, '').trim()).filter(Boolean)
+        : [];
+    // Parse stashes
     let stashes = [];
     const stashHashSet = new Set();
-    try {
-        const { stdout: stashOut } = await execFileAsync('git', [
-            '-C', repoPath, 'stash', 'list',
-            `--pretty=format:%H${SEP}%gd${SEP}%s${SEP}%P${SEP}%ci${REC}`,
-        ]);
-        stashes = stashOut.split(REC).map(s => s.trim()).filter(Boolean).map(line => {
+    if (stashRes.status === 'fulfilled') {
+        stashes = stashRes.value.stdout.split(REC).map(s => s.trim()).filter(Boolean).map(line => {
             const [hash, name, message, parentsRaw, date] = line.split(SEP);
             const parents = parentsRaw ? parentsRaw.trim().split(' ').filter(Boolean) : [];
-            // stash commit + index commit (parent[1]) + untracked commit (parent[2]) all excluded from main log
             stashHashSet.add(hash);
             if (parents[1]) {
                 stashHashSet.add(parents[1]);
@@ -61,16 +68,13 @@ async function getGitLog(repoPath, limit = 1500) {
             return { hash, name: name.trim(), message, parentHash: parents[0] || '', date: (date || '').trim() };
         });
     }
-    catch { }
-    // Remove stash-internal commits from the main commit list
+    // Remove stash commits from main log
     const filteredCommits = commits.filter(c => !stashHashSet.has(c.hash));
     assignColumns(filteredCommits, head);
-    const { stdout: branchOut } = await execFileAsync('git', ['-C', repoPath, 'branch', '-a']);
-    const branches = branchOut.split('\n').map(b => b.replace(/^\*?\s+/, '').trim()).filter(Boolean);
+    // Parse staged files
     let staged = [];
-    try {
-        const { stdout: stagedOut } = await execFileAsync('git', ['-C', repoPath, 'diff', '--cached', '--name-status']);
-        staged = stagedOut.trim().split('\n').filter(Boolean).map(line => {
+    if (stagedRes.status === 'fulfilled') {
+        staged = stagedRes.value.stdout.trim().split('\n').filter(Boolean).map(line => {
             const parts = line.split('\t');
             const status = parts[0].charAt(0);
             if ((status === 'R' || status === 'C') && parts.length >= 3) {
@@ -79,11 +83,10 @@ async function getGitLog(repoPath, limit = 1500) {
             return { status, path: parts[1] };
         });
     }
-    catch { }
+    // Parse unstaged files
     let unstaged = [];
-    try {
-        const { stdout: unstagedOut } = await execFileAsync('git', ['-C', repoPath, 'diff', '--name-status']);
-        unstaged = unstagedOut.trim().split('\n').filter(Boolean).map(line => {
+    if (unstagedRes.status === 'fulfilled') {
+        unstaged = unstagedRes.value.stdout.trim().split('\n').filter(Boolean).map(line => {
             const parts = line.split('\t');
             const status = parts[0].charAt(0);
             if ((status === 'R' || status === 'C') && parts.length >= 3) {
@@ -92,60 +95,61 @@ async function getGitLog(repoPath, limit = 1500) {
             return { status, path: parts[1] };
         });
     }
-    catch { }
-    let mergeHead;
-    try {
-        const { stdout } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--verify', 'MERGE_HEAD']);
-        mergeHead = stdout.trim();
+    // Add untracked files
+    if (untrackedRes.status === 'fulfilled') {
+        const untracked = untrackedRes.value.stdout.trim().split('\n').filter(Boolean)
+            .map(path => ({ status: 'A', path }));
+        unstaged = [...unstaged, ...untracked];
     }
-    catch { }
+    const mergeHead = mergeHeadRes.status === 'fulfilled' ? mergeHeadRes.value.stdout.trim() : undefined;
     return { commits: filteredCommits, branches, head, staged, unstaged, stashes, mergeHead };
 }
 function assignColumns(commits, headHash) {
-    // Each active "lane" tracks which commit hash it's waiting to merge into
-    // Pre-seed HEAD at lane 0 so the current branch always renders leftmost
     const lanes = headHash ? [headHash] : [];
+    const laneIndex = new Map(); // O(1) hash -> column lookup
     const colorMap = new Map();
     let nextColor = 0;
+    if (headHash) {
+        laneIndex.set(headHash, 0);
+    }
     for (const commit of commits) {
-        let col = lanes.indexOf(commit.hash);
+        let col = laneIndex.get(commit.hash) ?? -1;
         if (col === -1) {
-            // New branch: find first empty lane or add one
-            const emptyCol = lanes.indexOf(null);
-            col = emptyCol !== -1 ? emptyCol : lanes.length;
-            if (emptyCol !== -1) {
-                lanes[emptyCol] = commit.hash;
+            // Find first empty lane or add new one
+            col = lanes.findIndex(l => l === null);
+            if (col === -1) {
+                col = lanes.length;
             }
-            else {
-                lanes.push(commit.hash);
-            }
+            lanes[col] = commit.hash;
+            laneIndex.set(commit.hash, col);
         }
         if (!colorMap.has(commit.hash)) {
             colorMap.set(commit.hash, nextColor++ % exports.BRANCH_COLORS.length);
         }
         commit.column = col;
         commit.color = colorMap.get(commit.hash);
-        // Replace this lane with first parent; close if no parents
+        // Update lane: first parent continues the lane, others get new lanes
         if (commit.parents.length === 0) {
             lanes[col] = null;
+            laneIndex.delete(commit.hash);
         }
         else {
-            lanes[col] = commit.parents[0];
-            if (!colorMap.has(commit.parents[0])) {
-                colorMap.set(commit.parents[0], commit.color);
+            const parent = commit.parents[0];
+            lanes[col] = parent;
+            laneIndex.delete(commit.hash);
+            laneIndex.set(parent, col);
+            if (!colorMap.has(parent)) {
+                colorMap.set(parent, colorMap.get(commit.hash));
             }
         }
-        // Additional parents (merges) occupy new lanes or existing ones
+        // Merge parents get their own lanes
         for (let i = 1; i < commit.parents.length; i++) {
             const p = commit.parents[i];
-            if (!lanes.includes(p)) {
-                const emptyCol = lanes.indexOf(null);
-                if (emptyCol !== -1) {
-                    lanes[emptyCol] = p;
-                }
-                else {
-                    lanes.push(p);
-                }
+            if (!laneIndex.has(p)) {
+                const emptyCol = lanes.findIndex(l => l === null);
+                const newCol = emptyCol !== -1 ? emptyCol : lanes.length;
+                lanes[newCol] = p;
+                laneIndex.set(p, newCol);
             }
             if (!colorMap.has(p)) {
                 colorMap.set(p, nextColor++ % exports.BRANCH_COLORS.length);
@@ -154,18 +158,38 @@ function assignColumns(commits, headHash) {
     }
 }
 async function getCommitFiles(repoPath, hash) {
-    const { stdout } = await execFileAsync('git', [
-        '-C', repoPath,
-        'diff-tree', '--no-commit-id', '-r', '--name-status', '-M', hash,
-    ]);
-    return stdout.trim().split('\n').filter(Boolean).map((line) => {
-        const parts = line.split('\t');
-        const status = parts[0].charAt(0);
-        if ((status === 'R' || status === 'C') && parts.length >= 3) {
-            return { status, oldPath: parts[1], path: parts[2] };
+    try {
+        // For merge commits (2+ parents), use git show to see actual changes
+        const { stdout: logOut } = await execFileAsync('git', ['-C', repoPath, 'log', '--format=%P', '-n1', hash]);
+        const parents = logOut.trim().split(' ').filter(Boolean);
+        let stdout;
+        if (parents.length >= 2) {
+            // Merge commit: show changes relative to first parent
+            const { stdout: showOut } = await execFileAsync('git', [
+                '-C', repoPath, 'diff', '--name-status', '-M', parents[0], hash
+            ]);
+            stdout = showOut;
         }
-        return { status, path: parts[1] };
-    });
+        else {
+            // Regular commit
+            const { stdout: treeOut } = await execFileAsync('git', [
+                '-C', repoPath,
+                'diff-tree', '--no-commit-id', '-r', '--name-status', '-M', hash,
+            ]);
+            stdout = treeOut;
+        }
+        return stdout.trim().split('\n').filter(Boolean).map((line) => {
+            const parts = line.split('\t');
+            const status = parts[0].charAt(0);
+            if ((status === 'R' || status === 'C') && parts.length >= 3) {
+                return { status, oldPath: parts[1], path: parts[2] };
+            }
+            return { status, path: parts[1] };
+        });
+    }
+    catch {
+        return [];
+    }
 }
 async function getLineBlame(repoPath, filePath, line) {
     try {

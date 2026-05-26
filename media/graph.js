@@ -31,7 +31,16 @@
   let activeBranchFilter = '';
   let showRemoteBranches = true;
   let sidebarBranchFilter = '';
+  let pendingFilesHash = null;  // track which commit's files we're waiting for
+  let canvasOffset = 0;         // virtual canvas: Y offset from top of rows-wrap
+  let totalCanvasH = 0;         // full virtual canvas height
   let activeSidebarBranch = '';  // branch name selected in sidebar
+  let wipViewMode = 'path';           // 'path' | 'tree'
+  let wipSortMode = 'name';           // 'name' | 'status'
+  let commitViewMode = 'tree';        // 'path' | 'tree' for commit detail
+  let expandedUnstagedDirs = new Set();
+  let expandedStagedDirs   = new Set();
+  let currentCommitData = [];         // for commit detail tree rendering
 
   // ── DOM ───────────────────────────────────────────────────────────────────────
   const canvas          = document.getElementById('graph-canvas');
@@ -124,6 +133,11 @@
       document.getElementById('loading-overlay').classList.remove('hidden');
     } else if (msg.command === 'load') {
       document.getElementById('loading-overlay').classList.add('hidden');
+      // Remember which commit/WIP was open so we can restore it after refresh
+      const prevHash = pendingFilesHash ||
+        (!detailPanel.classList.contains('hidden') && selectedIdx >= 0 && data
+          ? data.commits[selectedIdx]?.hash : null);
+      const wasWip = !detailPanel.classList.contains('hidden') && selectedIdx === -1;
       data = msg.data;
       selectedIdx = -1;
       detailPanel.classList.add('hidden');
@@ -133,6 +147,13 @@
       renderBranchSidebar();
       statusBar.textContent = `${data.commits.length} commits · ${data.branches.length} branches`;
       render();
+      // Restore detail panel if the commit still exists
+      if (prevHash) {
+        const newIdx = data.commits.findIndex(c => c.hash === prevHash);
+        if (newIdx >= 0) { selectCommit(newIdx); }
+      } else if (wasWip) {
+        selectWip();
+      }
     } else if (msg.command === 'files') {
       renderFiles(msg.hash, msg.files);
     } else if (msg.command === 'diffData') {
@@ -500,17 +521,28 @@
     buildFlatRows(commits);
 
     toolbarWipActions.classList.toggle('hidden', !hasWipRow);
-    const canvasH = wipOffset + flatRows.length * ROW_H;
-    canvas.width        = graphW;
-    canvas.height       = canvasH;
-    canvas.style.width  = graphW + 'px';
-    canvas.style.height = canvasH + 'px';
-    graphClipWrap.style.height = canvasH + 'px';
-    graphClipWrap.style.top = '0';
+    totalCanvasH = wipOffset + flatRows.length * ROW_H;
 
+    canvas.width       = graphW;
+    canvas.style.width = graphW + 'px';
+
+    positionVirtualCanvas();
     drawCanvas(commits);
     buildRows(commits);
     applySearch();
+  }
+
+  // ── Virtual canvas ────────────────────────────────────────────────────────────
+  function positionVirtualCanvas() {
+    const viewH   = scrollWrap.clientHeight || 600;
+    const scrollT = scrollWrap.scrollTop || 0;
+    const overscan = viewH;
+    canvasOffset = Math.max(0, scrollT - overscan);
+    const canvasH = Math.min(totalCanvasH - canvasOffset, viewH + overscan * 2);
+    canvas.height       = Math.max(1, canvasH);
+    canvas.style.height = canvas.height + 'px';
+    graphClipWrap.style.height = canvas.height + 'px';
+    graphClipWrap.style.top    = canvasOffset + 'px';
   }
 
   // ── Canvas ────────────────────────────────────────────────────────────────────
@@ -538,14 +570,13 @@
           ctx.moveTo(x1, y1 + NODE_R);
           ctx.lineTo(x2, y2 - NODE_R);
         } else {
-          const dx = Math.abs(x2 - x1);
           const dy = y2 - y1;
-          const cr = Math.min(8, dx, dy * 0.5);
-          
-          const startX = x1 < x2 ? x1 + NODE_R : x1 - NODE_R;
-          ctx.moveTo(startX, y1);
-          ctx.arcTo(x2, y1, x2, y2 - NODE_R, cr);
-          ctx.lineTo(x2, y2 - NODE_R);
+          const startX = x1;
+          const startY = y1 + NODE_R;
+          const endX = x2;
+          const endY = y2 - NODE_R;
+          ctx.moveTo(startX, startY);
+          ctx.bezierCurveTo(startX, startY + dy * 0.4, endX, endY - dy * 0.4, endX, endY);
         }
         ctx.stroke();
       }
@@ -654,14 +685,11 @@
             ctx.moveTo(wx, wy + NODE_R);
             ctx.lineTo(mx, ny(mIdx) - NODE_R);
           } else {
-            const dx = Math.abs(mx - wx);
             const dy = ny(mIdx) - wy;
-            const cr = Math.min(8, dx, dy * 0.5);
-            
-            const startX = wx < mx ? wx + NODE_R : wx - NODE_R;
-            ctx.moveTo(startX, wy);
-            ctx.arcTo(mx, wy, mx, ny(mIdx) - NODE_R, cr);
-            ctx.lineTo(mx, ny(mIdx) - NODE_R);
+            const startY = wy + NODE_R;
+            const endY = ny(mIdx) - NODE_R;
+            ctx.moveTo(wx, startY);
+            ctx.bezierCurveTo(wx, startY + dy * 0.4, mx, endY - dy * 0.4, mx, endY);
           }
           ctx.stroke();
           ctx.setLineDash([]);
@@ -671,7 +699,9 @@
   }
 
   function redrawCanvas() {
-    if (data) { drawCanvas(data.commits); }
+    if (!data) { return; }
+    positionVirtualCanvas();
+    drawCanvas(getFilteredCommits());
   }
 
   function drawNode(commit, idx, selected) {
@@ -1154,31 +1184,106 @@
   }
 
   function showWipDetail() {
+    if (!data) { return; }
     const staged   = data.staged   || [];
     const unstaged = data.unstaged || [];
-    const files = mergeWipFiles(staged, unstaged);
-
-    expandedDirs = new Set();
-    expandDirsFor(files);
-
     const isMerging = !!data.mergeHead;
+
+    expandedUnstagedDirs = new Set();
+    expandedStagedDirs   = new Set();
+    expandDirsForSet(unstaged, expandedUnstagedDirs);
+    expandDirsForSet(staged,   expandedStagedDirs);
+
     detailContent.innerHTML = `
       <div class="d-subject">${isMerging ? 'Merge in Progress' : 'Work in Progress'}</div>
-      <div class="d-files-header">
-        <span class="d-files-label">Changed Files (${files.length})</span>
+      <div class="wip-toolbar">
+        <button class="wip-sort-btn" id="wip-sort-btn" title="Sort files">↕</button>
+        <div class="wip-view-toggle">
+          <button class="wip-view-btn${wipViewMode==='path'?' active':''}" data-view="path">≡ Path</button>
+          <button class="wip-view-btn${wipViewMode==='tree'?' active':''}" data-view="tree">⊞ Tree</button>
+        </div>
       </div>
-      <div id="d-files-section" class="d-files">${renderTreeHtml(buildFileTree(files), 0, '')}</div>`;
+
+      <div class="wip-section">
+        <div class="wip-sec-header">
+          <span class="wip-sec-chevron">▾</span>
+          <span class="wip-sec-title">Unstaged Files (${unstaged.length})</span>
+          <button class="wip-sec-action wip-stage-all-btn" ${unstaged.length===0?'disabled':''}
+            style="border:1px solid rgba(52,211,153,0.5);color:#34d399">Stage All Changes</button>
+        </div>
+        <div class="wip-sec-body" id="wip-unstaged-body">
+          <span class="wip-expand-all" data-type="unstaged">Expand All</span>
+          <div id="d-unstaged-files">${renderWipFiles(unstaged, expandedUnstagedDirs, 'unstaged')}</div>
+        </div>
+      </div>
+
+      <div class="wip-section">
+        <div class="wip-sec-header">
+          <span class="wip-sec-chevron">▾</span>
+          <span class="wip-sec-title">Staged Files (${staged.length})</span>
+          <button class="wip-sec-action wip-unstage-all-btn" ${staged.length===0?'disabled':''}
+            style="border:1px solid rgba(248,113,113,0.5);color:#f87171">Unstage All Changes</button>
+        </div>
+        <div class="wip-sec-body" id="wip-staged-body">
+          <span class="wip-expand-all" data-type="staged">Expand All</span>
+          <div id="d-staged-files">${renderWipFiles(staged, expandedStagedDirs, 'staged')}</div>
+        </div>
+      </div>`;
+
     detailPanel.classList.remove('hidden');
 
+    // Sort toggle
+    detailContent.querySelector('#wip-sort-btn').onclick = () => {
+      wipSortMode = wipSortMode === 'name' ? 'status' : 'name';
+      reRenderWip();
+    };
 
-    const section = document.getElementById('d-files-section');
-    section.onclick = e => {
-      const stageBtn = /** @type {HTMLElement} */(e.target).closest('[data-stage-action]');
-      if (stageBtn) {
+    // Path / Tree toggle
+    detailContent.querySelectorAll('.wip-view-btn').forEach(btn => {
+      btn.onclick = () => {
+        wipViewMode = btn.dataset.view;
+        detailContent.querySelectorAll('.wip-view-btn').forEach(b => b.classList.toggle('active', b === btn));
+        reRenderWip();
+      };
+    });
+
+    // Stage All / Unstage All
+    const stageAllBtn = detailContent.querySelector('.wip-stage-all-btn');
+    if (stageAllBtn) { stageAllBtn.onclick = () => vscode.postMessage({ command: 'stageAll' }); }
+    const unstageAllBtn = detailContent.querySelector('.wip-unstage-all-btn');
+    if (unstageAllBtn) { unstageAllBtn.onclick = () => vscode.postMessage({ command: 'unstageAll' }); }
+
+    // Collapse sections
+    detailContent.querySelectorAll('.wip-sec-header').forEach(hdr => {
+      hdr.onclick = e => {
+        if (/** @type {HTMLElement} */(e.target).closest('button')) { return; }
+        const body    = hdr.nextElementSibling;
+        const chevron = hdr.querySelector('.wip-sec-chevron');
+        const collapsed = body.classList.toggle('wip-sec-collapsed');
+        chevron.textContent = collapsed ? '›' : '▾';
+      };
+    });
+
+    // Expand All
+    detailContent.querySelectorAll('.wip-expand-all').forEach(btn => {
+      btn.onclick = () => {
+        const type  = btn.dataset.type;
+        const files = type === 'staged' ? staged : unstaged;
+        const dirs  = type === 'staged' ? expandedStagedDirs : expandedUnstagedDirs;
+        expandDirsForSet(files, dirs);
+        reRenderWipSection(type);
+      };
+    });
+
+    // File & dir clicks — delegated
+    detailContent.onclick = e => {
+      const stBtn = /** @type {HTMLElement} */(e.target).closest('[data-stage-action]');
+      if (stBtn) {
         e.stopPropagation();
-        const action = stageBtn.dataset.stageAction;
-        const path   = stageBtn.dataset.stagePath;
-        vscode.postMessage({ command: action === 'stage' ? 'stageFile' : 'unstageFile', path });
+        vscode.postMessage({
+          command: stBtn.dataset.stageAction === 'stage' ? 'stageFile' : 'unstageFile',
+          path: stBtn.dataset.stagePath,
+        });
         return;
       }
       const fileRow = /** @type {HTMLElement} */(e.target).closest('[data-file]');
@@ -1192,13 +1297,102 @@
         vscode.postMessage({ command: cmd, path: fileRow.dataset.file, status: fileRow.dataset.status });
         return;
       }
-      const dirRow = /** @type {HTMLElement} */(e.target).closest('[data-dir]');
+      const dirRow = /** @type {HTMLElement} */(e.target).closest('[data-dir][data-dtype]');
       if (dirRow) {
-        const p = dirRow.dataset.dir;
-        if (expandedDirs.has(p)) { expandedDirs.delete(p); } else { expandedDirs.add(p); }
-        rerenderTree();
+        const p     = dirRow.dataset.dir;
+        const dtype = dirRow.dataset.dtype;
+        const dirs  = dtype === 'staged' ? expandedStagedDirs : expandedUnstagedDirs;
+        if (dirs.has(p)) { dirs.delete(p); } else { dirs.add(p); }
+        reRenderWipSection(dtype);
       }
     };
+  }
+
+  function expandDirsForSet(files, set) {
+    for (const f of files) {
+      const parts = f.path.split('/');
+      let prefix = '';
+      for (let i = 0; i < parts.length - 1; i++) {
+        prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+        set.add(prefix);
+      }
+    }
+  }
+
+  function reRenderWip() {
+    const staged   = data ? (data.staged   || []) : [];
+    const unstaged = data ? (data.unstaged || []) : [];
+    const uEl = document.getElementById('d-unstaged-files');
+    if (uEl) { uEl.innerHTML = renderWipFiles(unstaged, expandedUnstagedDirs, 'unstaged'); }
+    const sEl = document.getElementById('d-staged-files');
+    if (sEl) { sEl.innerHTML = renderWipFiles(staged, expandedStagedDirs, 'staged'); }
+  }
+
+  function reRenderWipSection(type) {
+    const files = type === 'staged' ? (data?.staged || []) : (data?.unstaged || []);
+    const dirs  = type === 'staged' ? expandedStagedDirs : expandedUnstagedDirs;
+    const el    = document.getElementById(`d-${type}-files`);
+    if (el) { el.innerHTML = renderWipFiles(files, dirs, type); }
+  }
+
+  function renderWipFiles(files, expandedSet, type) {
+    if (!files.length) { return '<div class="d-loading">No changes</div>'; }
+    const cmd         = type === 'staged' ? 'getStagedDiff' : 'getUnstagedDiff';
+    const stageAction = type === 'unstaged' ? 'stage' : 'unstage';
+    const sorted = wipSortMode === 'status'
+      ? [...files].sort((a, b) => (a.status < b.status ? -1 : a.status > b.status ? 1 : a.path.localeCompare(b.path)))
+      : [...files].sort((a, b) => a.path.localeCompare(b.path));
+    const filesCmd = sorted.map(f => ({ ...f, cmd }));
+    if (wipViewMode === 'path') { return renderWipPathList(filesCmd, stageAction); }
+    return renderWipTreeHtml(buildFileTree(filesCmd), 0, '', expandedSet, type, stageAction);
+  }
+
+  function renderWipPathList(files, stageAction) {
+    const parts = [];
+    for (const f of files) {
+      const color = FS_COLOR[f.status] || '#ccc';
+      parts.push(`<div class="ft-file-row" data-file="${esc(f.path)}" data-status="${f.status}" data-cmd="${f.cmd}" style="padding-left:6px" title="${esc(f.path)}">${SVG_FILE_I}<span class="ft-name">${esc(f.path)}</span><span class="ft-badge" style="color:${color}">${f.status}</span><button class="ft-stage-btn" data-stage-action="${stageAction}" data-stage-path="${esc(f.path)}">${stageAction==='stage'?'+':'−'}</button></div>`);
+    }
+    return parts.join('');
+  }
+
+  function renderWipTreeHtml(node, depth, prefix, expandedSet, dtype, stageAction) {
+    const parts = [];
+    const pad   = depth * 14;
+    const dirs  = Object.keys(node).filter(k => k !== '__files').sort();
+    for (const key of dirs) {
+      const fullPath = prefix ? `${prefix}/${key}` : key;
+      const open     = expandedSet.has(fullPath);
+      const counts   = getFolderCounts(node[key]);
+      parts.push(`<div class="ft-dir-row" data-dir="${esc(fullPath)}" data-dtype="${dtype}" style="padding-left:${pad}px"><span class="ft-arrow">${open ? '▾' : '›'}</span>${open ? SVG_FOLDER_O : SVG_FOLDER_C}<span class="ft-name">${esc(key)}</span><span class="ft-dir-counts">${renderFolderCounts(counts)}</span></div>`);
+      if (open) { parts.push(renderWipTreeHtml(node[key], depth + 1, fullPath, expandedSet, dtype, stageAction)); }
+    }
+    for (const f of (node.__files || [])) {
+      const name    = f.path.split('/').pop();
+      const display = f.oldPath ? `${f.oldPath.split('/').pop()} → ${name}` : name;
+      const color   = FS_COLOR[f.status] || '#ccc';
+      parts.push(`<div class="ft-file-row" data-file="${esc(f.path)}" data-status="${f.status}" data-cmd="${f.cmd}" style="padding-left:${pad + 18}px" title="${esc(f.path)}">${SVG_FILE_I}<span class="ft-name">${esc(display)}</span><span class="ft-badge" style="color:${color}">${f.status}</span><button class="ft-stage-btn" data-stage-action="${stageAction}" data-stage-path="${esc(f.path)}">${stageAction==='stage'?'+':'−'}</button></div>`);
+    }
+    return parts.join('');
+  }
+
+  function getFolderCounts(node) {
+    const counts = {};
+    function walk(n) {
+      for (const f of (n.__files || [])) { counts[f.status] = (counts[f.status] || 0) + 1; }
+      for (const k of Object.keys(n).filter(x => x !== '__files')) { walk(n[k]); }
+    }
+    walk(node);
+    return counts;
+  }
+
+  const STATUS_SYMBOL = { A: '+', M: '✏', D: '−', R: '→', C: '⊕' };
+
+  function renderFolderCounts(counts) {
+    return Object.entries(counts)
+      .filter(([, n]) => n > 0)
+      .map(([s, n]) => `<span class="ft-dir-cnt" style="color:${FS_COLOR[s]||'#ccc'}">${STATUS_SYMBOL[s]||s} ${n}</span>`)
+      .join('');
   }
 
   function setRowSelected(idx) {
@@ -1225,10 +1419,27 @@
       <div class="d-row"><span class="d-label">Date</span><span>${esc(c.date)}</span></div>
       ${c.parents.length ? `<div class="d-row"><span class="d-label">Parents</span><span>${c.parents.map(p=>`<code class="d-hash">${p.slice(0,8)}</code>`).join(' ')}</span></div>` : ''}
       ${c.refs.filter(Boolean).length ? `<div class="d-row d-refs"><span class="d-label">Refs</span><span>${c.refs.filter(r=>r&&r!=='HEAD'&&!r.startsWith('HEAD ->')).map(r=>`<span class="ref-chip ref-local" style="border-color:${color};color:${lighten(color)}">${esc(r)}</span>`).join(' ')}</span></div>` : ''}
-      <div class="d-files-header"><span class="d-files-label">Changed Files</span></div>
+      <div class="d-files-header">
+        <span class="d-files-label">Changed Files</span>
+        <div class="d-view-toggle" style="margin-left:auto">
+          <button class="d-view-btn${commitViewMode==='path'?' active':''}" data-view="path">≡ Path</button>
+          <button class="d-view-btn${commitViewMode==='tree'?' active':''}" data-view="tree">⊞ Tree</button>
+        </div>
+      </div>
       <div id="d-files-section" class="d-files"><div class="d-loading">Loading…</div></div>`;
 
     detailPanel.classList.remove('hidden');
+
+    // Path/Tree toggle for commit detail
+    detailContent.querySelectorAll('.d-view-btn').forEach(btn => {
+      btn.onclick = () => {
+        commitViewMode = btn.dataset.view;
+        detailContent.querySelectorAll('.d-view-btn').forEach(b => b.classList.toggle('active', b === btn));
+        reRenderCommitFiles();
+      };
+    });
+
+    pendingFilesHash = c.hash;
     vscode.postMessage({ command: 'getFiles', hash: c.hash });
   }
 
@@ -1241,6 +1452,8 @@
 
   let expandedDirs   = new Set();
   let currentFilesData = [];
+  let cachedFileTree = null;         // cache tree to avoid rebuilding
+  let cachedFileTreeDataKey = null;  // track what data was used for cache
 
   function buildFileTree(files) {
     const root = {};
@@ -1258,36 +1471,26 @@
   }
 
   function renderTreeHtml(node, depth, prefix) {
-    let html = '';
+    const parts = [];
     const pad = depth * 14;
     const dirs = Object.keys(node).filter(k => k !== '__files').sort();
 
     for (const key of dirs) {
       const fullPath = prefix ? `${prefix}/${key}` : key;
       const open = expandedDirs.has(fullPath);
-      html += `<div class="ft-dir-row" data-dir="${esc(fullPath)}" style="padding-left:${pad}px">`;
-      html += `<span class="ft-arrow">${open ? '▾' : '›'}</span>`;
-      html += open ? SVG_FOLDER_O : SVG_FOLDER_C;
-      html += `<span class="ft-name">${esc(key)}</span></div>`;
-      if (open) { html += renderTreeHtml(node[key], depth + 1, fullPath); }
+      parts.push(`<div class="ft-dir-row" data-dir="${esc(fullPath)}" style="padding-left:${pad}px"><span class="ft-arrow">${open ? '▾' : '›'}</span>${open ? SVG_FOLDER_O : SVG_FOLDER_C}<span class="ft-name">${esc(key)}</span></div>`);
+      if (open) { parts.push(renderTreeHtml(node[key], depth + 1, fullPath)); }
     }
 
     for (const f of (node.__files || [])) {
       const name = f.path.split('/').pop();
       const display = f.oldPath ? `${f.oldPath.split('/').pop()} → ${name}` : name;
       const color = FS_COLOR[f.status] || '#ccc';
-      html += `<div class="ft-file-row" data-file="${esc(f.path)}" data-status="${f.status}" data-cmd="${f.cmd || ''}" style="padding-left:${pad + 18}px" title="${esc(f.path)}">`;
-      html += SVG_FILE_I;
-      html += `<span class="ft-name">${esc(display)}</span>`;
-      html += `<span class="ft-badge" style="color:${color}">${f.status}</span>`;
-      if (f.cmd === 'getUnstagedDiff') {
-        html += `<button class="ft-stage-btn" data-stage-action="stage" data-stage-path="${esc(f.path)}" data-tip="Stage file">+</button>`;
-      } else if (f.cmd === 'getStagedDiff') {
-        html += `<button class="ft-stage-btn" data-stage-action="unstage" data-stage-path="${esc(f.path)}" data-tip="Unstage file">−</button>`;
-      }
-      html += `</div>`;
+      const btn = f.cmd === 'getUnstagedDiff' ? `<button class="ft-stage-btn" data-stage-action="stage" data-stage-path="${esc(f.path)}" data-tip="Stage file">+</button>`
+               : f.cmd === 'getStagedDiff'  ? `<button class="ft-stage-btn" data-stage-action="unstage" data-stage-path="${esc(f.path)}" data-tip="Unstage file">−</button>` : '';
+      parts.push(`<div class="ft-file-row" data-file="${esc(f.path)}" data-status="${f.status}" data-cmd="${f.cmd || ''}" style="padding-left:${pad + 18}px" title="${esc(f.path)}">${SVG_FILE_I}<span class="ft-name">${esc(display)}</span><span class="ft-badge" style="color:${color}">${f.status}</span>${btn}</div>`);
     }
-    return html;
+    return parts.join('');
   }
 
   function rerenderTree() {
@@ -1296,7 +1499,8 @@
   }
 
   function renderFiles(hash, files) {
-    if (!data || data.commits[selectedIdx]?.hash !== hash) { return; }
+    if (!data || hash !== pendingFilesHash) { return; }
+    pendingFilesHash = null;
     const section = document.getElementById('d-files-section');
     if (!section) { return; }
 
@@ -1322,7 +1526,17 @@
     const hdr = document.querySelector('.d-files-header .d-label');
     if (hdr) { hdr.textContent = `Changed Files (${files.length})`; }
 
-    section.innerHTML = renderTreeHtml(buildFileTree(files), 0, '');
+    // Cache tree: only rebuild if data changed
+    const filesKey = JSON.stringify(files.map(f => f.path).sort());
+    if (cachedFileTreeDataKey !== filesKey) {
+      cachedFileTree = buildFileTree(files);
+      cachedFileTreeDataKey = filesKey;
+    }
+
+    section.innerHTML = commitViewMode === 'path'
+      ? renderCommitPathList(files)
+      : renderTreeHtml(cachedFileTree, 0, '');
+
     section.onclick = e => {
       const fileRow = /** @type {HTMLElement} */(e.target).closest('[data-file]');
       if (fileRow) {
@@ -1348,6 +1562,24 @@
         rerenderTree();
       }
     };
+  }
+
+  function reRenderCommitFiles() {
+    const section = document.getElementById('d-files-section');
+    if (section && currentFilesData.length > 0) {
+      section.innerHTML = commitViewMode === 'path'
+        ? renderCommitPathList(currentFilesData)
+        : renderTreeHtml(cachedFileTree || buildFileTree(currentFilesData), 0, '');
+    }
+  }
+
+  function renderCommitPathList(files) {
+    const parts = [];
+    for (const f of files) {
+      const color = FS_COLOR[f.status] || '#ccc';
+      parts.push(`<div class="ft-file-row" data-file="${esc(f.path)}" data-status="${f.status}" style="padding-left:6px" title="${esc(f.path)}">${SVG_FILE_I}<span class="ft-name">${esc(f.path)}</span><span class="ft-badge" style="color:${color}">${f.status}</span></div>`);
+    }
+    return parts.join('');
   }
 
   // ── Diff overlay ──────────────────────────────────────────────────────────────
@@ -1731,14 +1963,23 @@
 
   // ── Scroll sync ───────────────────────────────────────────────────────────────
   function initScrollSync() {
+    let scrollRaf = null;
     scrollWrap.addEventListener('scroll', () => {
       colHeadersInner.style.transform = `translateX(-${scrollWrap.scrollLeft}px)`;
+      if (scrollRaf) { return; }
+      scrollRaf = requestAnimationFrame(() => {
+        scrollRaf = null;
+        redrawCanvas();
+      });
     });
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   function nx(col) { return GRAPH_PAD + col * COL_W + COL_W / 2; }
-  function ny(commitIdx) { return commitRowY.get(commitIdx) ?? (wipOffset + commitIdx * ROW_H + ROW_H / 2); }
+  function ny(commitIdx) {
+    const absY = commitRowY.get(commitIdx) ?? (wipOffset + commitIdx * ROW_H + ROW_H / 2);
+    return absY - canvasOffset;
+  }
 
   function toInitials(name) {
     const p = (name || '?').trim().split(/\s+/);

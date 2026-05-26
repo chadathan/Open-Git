@@ -110,6 +110,12 @@ export class GraphPanel {
         } else if (msg.command === 'unstageFile') {
           try { await execFileAsync('git', ['-C', this.repoPath, 'restore', '--staged', '--', msg.path]); } catch {}
           await this.refresh();
+        } else if (msg.command === 'stageAll') {
+          try { await execFileAsync('git', ['-C', this.repoPath, 'add', '-A']); } catch {}
+          await this.refresh();
+        } else if (msg.command === 'unstageAll') {
+          try { await execFileAsync('git', ['-C', this.repoPath, 'restore', '--staged', '.']); } catch {}
+          await this.refresh();
         } else if (msg.command === 'stash') {
           try { await execFileAsync('git', ['-C', this.repoPath, 'stash']); } catch {}
           await this.refresh();
@@ -647,7 +653,17 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     } else if (msg.command === 'getUnstagedDiff') {
       try {
         const { stdout } = await execFileAsync('git', ['-C', this.repoPath, 'diff', '--', msg.path]);
-        webview.postMessage({ command: 'diffData', path: msg.path, unified: stdout });
+        if (stdout.trim()) {
+          webview.postMessage({ command: 'diffData', path: msg.path, unified: stdout });
+        } else {
+          // Untracked file — show full content as all-added diff
+          const absPath = nodePath.join(this.repoPath, msg.path);
+          const content = fs.readFileSync(absPath, 'utf-8');
+          const lines = content.split('\n');
+          const patch = `--- /dev/null\n+++ b/${msg.path}\n@@ -0,0 +1,${lines.length} @@\n`
+            + lines.map(l => `+${l}`).join('\n') + '\n';
+          webview.postMessage({ command: 'diffData', path: msg.path, unified: patch });
+        }
       } catch { webview.postMessage({ command: 'diffData', path: msg.path, unified: '' }); }
     } else if (msg.command === 'getStagedDiff') {
       try {
@@ -667,6 +683,14 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     } else if (msg.command === 'unstageFile') {
       this.showLoading();
       try { await execFileAsync('git', ['-C', this.repoPath, 'restore', '--staged', '--', msg.path]); } catch {}
+      await this.refresh();
+    } else if (msg.command === 'stageAll') {
+      this.showLoading();
+      try { await execFileAsync('git', ['-C', this.repoPath, 'add', '-A']); } catch {}
+      await this.refresh();
+    } else if (msg.command === 'unstageAll') {
+      this.showLoading();
+      try { await execFileAsync('git', ['-C', this.repoPath, 'restore', '--staged', '.']); } catch {}
       await this.refresh();
     } else if (msg.command === 'stash') {
       this.showLoading();
