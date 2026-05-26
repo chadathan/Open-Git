@@ -2,7 +2,7 @@
   "name": "open-git",
   "displayName": "Open Git",
   "description": "View a Git Graph of your repository, and perform Git actions from the graph.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["SCM Providers"],
