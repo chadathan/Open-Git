@@ -54,9 +54,9 @@ export class GraphPanel {
         } else if (msg.command === 'mergeToCurrent') {
           this.runInTerminal(`git -C "${this.repoPath}" merge "${msg.source}"`);
         } else if (msg.command === 'checkoutBranch') {
-          this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout "${msg.branch}" && git -C "${this.repoPath}" pull --ff-only`);
+          this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout "${msg.branch}" && git -C "${this.repoPath}" pull --ff-only`);
         } else if (msg.command === 'checkoutDetach') {
-          this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout "${msg.hash}"`);
+          this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout "${msg.hash}"`);
         } else if (msg.command === 'newBranch') {
           await this.checkoutNewBranch(msg.hash);
         } else if (msg.command === 'checkout') {
@@ -131,7 +131,7 @@ export class GraphPanel {
           try { await execFileAsync('git', ['-C', this.repoPath, 'reset', '--soft', 'HEAD@{1}']); } catch {}
           await this.refresh();
         } else if (msg.command === 'stash') {
-          try { await execFileAsync('git', ['-C', this.repoPath, 'stash']); } catch {}
+          try { await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']); } catch {}
           await this.refresh();
         } else if (msg.command === 'mergeBranch') {
           const terminal = vscode.window.createTerminal({ name: 'Open Git', hideFromUser: false });
@@ -202,7 +202,7 @@ export class GraphPanel {
   private async checkoutNewBranch(hash: string) {
     const name = await vscode.window.showInputBox({ prompt: 'New branch name' });
     if (!name) { return; }
-    this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
+    this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
   }
 
   private async checkout(hash: string) {
@@ -212,7 +212,7 @@ export class GraphPanel {
     );
     if (!choice) { return; }
     if (choice.startsWith('Checkout')) {
-      this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout ${hash}`);
+      this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout ${hash}`);
     } else {
       await this.checkoutNewBranch(hash);
     }
@@ -538,7 +538,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   private async checkoutNewBranch(hash: string) {
     const name = await vscode.window.showInputBox({ prompt: 'New branch name' });
     if (!name) { return; }
-    this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
+    this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
   }
 
   private async openDiff(hash: string, parentHash: string | null, filePath: string, status: string) {
@@ -594,7 +594,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       await this.refresh();
     } else if (msg.command === 'checkoutBranch') {
       this.showLoading();
-      try { await execFileAsync('git', ['-C', this.repoPath, 'stash']); } catch {}
+      try { await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']); } catch {}
       try {
         await execFileAsync('git', ['-C', this.repoPath, 'checkout', msg.branch]);
 
@@ -634,7 +634,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       await this.refresh();
     } else if (msg.command === 'checkoutDetach') {
       this.showLoading();
-      try { await execFileAsync('git', ['-C', this.repoPath, 'stash']); } catch {}
+      try { await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']); } catch {}
       try {
         await execFileAsync('git', ['-C', this.repoPath, 'checkout', msg.hash]);
         this.sendToast('success', `Checked out ${(msg.hash as string).slice(0, 8)}`);
@@ -646,7 +646,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       await this.checkoutNewBranch(msg.hash);
     } else if (msg.command === 'checkout') {
       this.showLoading();
-      try { await execFileAsync('git', ['-C', this.repoPath, 'stash']); } catch {}
+      try { await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']); } catch {}
       try {
         await execFileAsync('git', ['-C', this.repoPath, 'checkout', msg.hash]);
         this.sendToast('success', `Checked out ${(msg.hash as string).slice(0, 8)}`);
@@ -738,7 +738,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       await this.refresh();
     } else if (msg.command === 'stash') {
       this.showLoading();
-      try { await execFileAsync('git', ['-C', this.repoPath, 'stash']); } catch {}
+      try { await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']); } catch {}
       await this.refresh();
     } else if (msg.command === 'popStash') {
       this.showLoading();

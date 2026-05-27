@@ -49,10 +49,10 @@ class GraphPanel {
                 this.runInTerminal(`git -C "${this.repoPath}" merge "${msg.source}"`);
             }
             else if (msg.command === 'checkoutBranch') {
-                this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout "${msg.branch}" && git -C "${this.repoPath}" pull --ff-only`);
+                this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout "${msg.branch}" && git -C "${this.repoPath}" pull --ff-only`);
             }
             else if (msg.command === 'checkoutDetach') {
-                this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout "${msg.hash}"`);
+                this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout "${msg.hash}"`);
             }
             else if (msg.command === 'newBranch') {
                 await this.checkoutNewBranch(msg.hash);
@@ -167,7 +167,7 @@ class GraphPanel {
             }
             else if (msg.command === 'stash') {
                 try {
-                    await execFileAsync('git', ['-C', this.repoPath, 'stash']);
+                    await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']);
                 }
                 catch { }
                 await this.refresh();
@@ -232,7 +232,7 @@ class GraphPanel {
         if (!name) {
             return;
         }
-        this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
+        this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
     }
     async checkout(hash) {
         const choice = await vscode.window.showQuickPick(['Checkout this commit (detached HEAD)', 'Create branch here'], { placeHolder: `Checkout ${hash.slice(0, 8)}` });
@@ -240,7 +240,7 @@ class GraphPanel {
             return;
         }
         if (choice.startsWith('Checkout')) {
-            this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout ${hash}`);
+            this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout ${hash}`);
         }
         else {
             await this.checkoutNewBranch(hash);
@@ -545,7 +545,7 @@ class GraphViewProvider {
         if (!name) {
             return;
         }
-        this.runInTerminal(`git -C "${this.repoPath}" stash; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
+        this.runInTerminal(`git -C "${this.repoPath}" stash push -u; git -C "${this.repoPath}" checkout -b "${name}" ${hash}`);
     }
     async openDiff(hash, parentHash, filePath, status) {
         const fileName = filePath.split('/').pop() ?? filePath;
@@ -608,7 +608,7 @@ class GraphViewProvider {
         else if (msg.command === 'checkoutBranch') {
             this.showLoading();
             try {
-                await execFileAsync('git', ['-C', this.repoPath, 'stash']);
+                await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']);
             }
             catch { }
             try {
@@ -650,7 +650,7 @@ class GraphViewProvider {
         else if (msg.command === 'checkoutDetach') {
             this.showLoading();
             try {
-                await execFileAsync('git', ['-C', this.repoPath, 'stash']);
+                await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']);
             }
             catch { }
             try {
@@ -668,7 +668,7 @@ class GraphViewProvider {
         else if (msg.command === 'checkout') {
             this.showLoading();
             try {
-                await execFileAsync('git', ['-C', this.repoPath, 'stash']);
+                await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']);
             }
             catch { }
             try {
@@ -804,7 +804,7 @@ class GraphViewProvider {
         else if (msg.command === 'stash') {
             this.showLoading();
             try {
-                await execFileAsync('git', ['-C', this.repoPath, 'stash']);
+                await execFileAsync('git', ['-C', this.repoPath, 'stash', 'push', '-u']);
             }
             catch { }
             await this.refresh();
